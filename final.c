@@ -90,6 +90,28 @@ float readFloat(char prompt[])
     return atof(input);
 }
 
+/* Select the payment method once for each income or expense record. */
+void choosePaymentMethod(char paymentMethod[])
+{
+    int option;
+    do
+    {
+        printf("Select payment method:\n");
+        printf("1. Cash\n");
+        printf("2. Bank Transfer\n");
+        option = readInt("Enter option: ");
+        if (option != 1 && option != 2)
+        {
+            printf("Invalid option! Please select 1 or 2.\n");
+        }
+    } while (option != 1 && option != 2);
+
+    if (option == 1)
+        strcpy(paymentMethod, "Cash");
+    else
+        strcpy(paymentMethod, "Bank Transfer");
+}
+
 void makeFileNames()
 {
     sprintf(userFile, "%s_user.txt", username);
@@ -418,25 +440,8 @@ void addIncome()
              i->source, sizeof(i->source));
     readText("Enter date (DD-MM-YYYY): ", i->date, sizeof(i->date));
 
-    int choice;
-
-    do
-    {
-        choice = readInt("Payment method (1 = Cash, 2 = Bank Transfer): ");
-
-        if (choice == 1)
-        {
-            strcpy(i->paymentMethod, "Cash");
-        }
-        else if (choice == 2)
-        {
-            strcpy(i->paymentMethod, "Bank Transfer");
-        }
-        else
-        {
-            printf("Please enter 1 or 2.\n");
-        }
-    } while (choice != 1 && choice != 2);
+    // Ask once where this income was received.
+    choosePaymentMethod(i->paymentMethod);
 
     incomeCount++;
     saveIncomes();
@@ -707,6 +712,202 @@ void waringamount(float income){
     amount  = income * 0.8;
     printf("The warning amount is: %f \n",amount);
 }
+
+
+/* ------ MEMBER 3: EDIT AND DELETE INCOME / EXPENSE RECORDS ------ */
+/* Original Member 3 comments and operation names have been retained.
+   GUI and console use these shared helpers to keep saved records in sync. */
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
+/* Make a new file first, then replace the old one; preserving each existing
+   4-line income / 6-line expense format for existing user accounts. */
+static int budgetlyPersistChange(int kind, int index, const void *replacement, int isDelete)
+{
+    const char *target = kind == 0 ? incomeFile : expenseFile;
+    char temporary[180];
+    FILE *fp;
+    int failure = 0;
+    int i;
+    if (kind == 0 && (index < 0 || index >= incomeCount)) return 0;
+    if (kind == 1 && (index < 0 || index >= expenseCount)) return 0;
+    snprintf(temporary, sizeof temporary, "%s.edit.tmp", target);
+    fp = fopen(temporary, "w");
+    if (fp == NULL) return 0;
+    if (kind == 0) {
+        for (i = 0; i < incomeCount; i++) {
+            const struct Income *entry = (i == index && replacement && !isDelete)
+                ? (const struct Income *)replacement : &incomes[i];
+            if (isDelete && i == index) continue;
+            if (fprintf(fp, "%.2f\n%s\n%s\n%s\n", entry->amount,
+                       entry->source, entry->date, entry->paymentMethod) < 0) {
+                failure = 1; break;
+            }
+        }
+    } else {
+        for (i = 0; i < expenseCount; i++) {
+            const struct Expense *entry = (i == index && replacement && !isDelete)
+                ? (const struct Expense *)replacement : &expenses[i];
+            if (isDelete && i == index) continue;
+            if (fprintf(fp, "%.2f\n%s\n%s\n%s\n%s\n%s\n", entry->amount,
+                       entry->category, entry->date, entry->place,
+                       entry->paymentMethod, entry->status) < 0) {
+                failure = 1; break;
+            }
+        }
+    }
+    if (fclose(fp) == EOF) failure = 1;
+    if (failure) { remove(temporary); return 0; }
+#ifdef _WIN32
+    if (!MoveFileExA(temporary, target, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        remove(temporary); return 0;
+    }
+#else
+    if (rename(temporary, target) != 0) { remove(temporary); return 0; }
+#endif
+    return 1;
+}
+
+static int budgetlyTextSafe(const char *s)
+{
+    int i;
+    if (!s || !s[0]) return 0;
+    for (i = 0; s[i]; i++) if (s[i] == '\n' || s[i] == '\r') return 0;
+    return 1;
+}
+
+/* 4. Edit Expense Function */
+/* Save a replacement entry and reject a paid change that exceeds available funds.
+   The previous paid expense is temporarily added back for this check. */
+int budgetlyEditExpenseAt(int index, const struct Expense *replacement)
+{
+    float bank = 0, cash = 0;
+    if (!replacement || index < 0 || index >= expenseCount ||
+        !(replacement->amount > 0) ||
+        !budgetlyTextSafe(replacement->category) ||
+        !budgetlyTextSafe(replacement->place) ||
+        !budgetlyTextSafe(replacement->date) ||
+        !budgetlyTextSafe(replacement->paymentMethod) ||
+        !budgetlyTextSafe(replacement->status)) return 0;
+    if (strcmp(replacement->status, "Paid") == 0 ||
+        strcmp(replacement->status, "paid") == 0) {
+        int newCash = strcmp(replacement->paymentMethod,"Cash") == 0 ||
+                      strcmp(replacement->paymentMethod,"cash") == 0;
+        getBalances(&bank, &cash);
+        if (strcmp(expenses[index].status, "Paid") == 0 ||
+            strcmp(expenses[index].status, "paid") == 0) {
+            if (strcmp(expenses[index].paymentMethod, "Cash") == 0 ||
+                strcmp(expenses[index].paymentMethod, "cash") == 0)
+                cash += expenses[index].amount;
+            else bank += expenses[index].amount;
+        }
+        if ((newCash ? cash : bank) + 0.0001f < replacement->amount) return -1;
+    }
+    if (!budgetlyPersistChange(1, index, replacement, 0)) return 0;
+    expenses[index] = *replacement;
+    return 1;
+}
+
+/* 5. Delete Expense Function */
+int budgetlyDeleteExpenseAt(int index)
+{
+    int i;
+    if (!budgetlyPersistChange(1, index, NULL, 1)) return 0;
+    for (i = index; i < expenseCount - 1; i++) expenses[i] = expenses[i + 1];
+    expenseCount--;
+    return 1;
+}
+
+/* 6. Edit Income Function */
+int budgetlyEditIncomeAt(int index, const struct Income *replacement)
+{
+    if (!replacement || index < 0 || index >= incomeCount ||
+        !(replacement->amount > 0) ||
+        !budgetlyTextSafe(replacement->source) ||
+        !budgetlyTextSafe(replacement->date) ||
+        !budgetlyTextSafe(replacement->paymentMethod)) return 0;
+    if (!budgetlyPersistChange(0, index, replacement, 0)) return 0;
+    incomes[index] = *replacement;
+    return 1;
+}
+
+/* 7. Delete Income Function */
+int budgetlyDeleteIncomeAt(int index)
+{
+    int i;
+    if (!budgetlyPersistChange(0, index, NULL, 1)) return 0;
+    for (i = index; i < incomeCount - 1; i++) incomes[i] = incomes[i + 1];
+    incomeCount--;
+    return 1;
+}
+
+/* The following are Member 3's original interactive operation names.
+   They are used in the console; desktop/mobile GUIs call the *At helpers. */
+void editExpense(void)
+{
+    int index, result;
+    struct Expense updated;
+    // 4. Edit Expense Function
+    if (expenseCount == 0) { printf("No expense records available to edit.\n"); return; }
+    viewExpenses();
+    index = readInt("Enter expense number to edit: ") - 1;
+    if (index < 0 || index >= expenseCount) { printf("Invalid expense number!\n"); return; }
+    updated = expenses[index];
+    updated.amount = readFloat("Enter new amount: ");
+    readText("Enter new category: ", updated.category, sizeof updated.category);
+    readText("Enter new date (DD-MM-YYYY): ", updated.date, sizeof updated.date);
+    readText("Enter new place: ", updated.place, sizeof updated.place);
+    choosePaymentMethod(updated.paymentMethod);
+    readText("Enter new status (Paid/Unpaid): ", updated.status, sizeof updated.status);
+    result = budgetlyEditExpenseAt(index, &updated);
+    if (result == 1) printf("Expense updated successfully!\n");
+    else if (result == -1) printf("Insufficient balance for this expense!\n");
+    else printf("Unable to update expense. Check values and file permissions.\n");
+}
+
+void deleteExpense(void)
+{
+    int index;
+    // 5. Delete Expense Function
+    if (expenseCount == 0) { printf("No expense records available to delete.\n"); return; }
+    viewExpenses();
+    index = readInt("Enter expense number to delete: ") - 1;
+    if (index < 0 || index >= expenseCount) { printf("Invalid expense number!\n"); return; }
+    if (budgetlyDeleteExpenseAt(index)) printf("Expense deleted successfully!\n");
+    else printf("Could not delete expense.\n");
+}
+
+void editIncome(void)
+{
+    int index;
+    struct Income updated;
+    // 6. Edit Income Function
+    if (incomeCount == 0) { printf("No income records available to edit.\n"); return; }
+    viewIncomes();
+    index = readInt("Enter income number to edit: ") - 1;
+    if (index < 0 || index >= incomeCount) { printf("Invalid income number!\n"); return; }
+    updated = incomes[index];
+    updated.amount = readFloat("Enter new amount: ");
+    readText("Enter new source: ", updated.source, sizeof updated.source);
+    readText("Enter new date (DD-MM-YYYY): ", updated.date, sizeof updated.date);
+    choosePaymentMethod(updated.paymentMethod);
+    if (budgetlyEditIncomeAt(index, &updated)) printf("Income updated successfully!\n");
+    else printf("Unable to update income. Check values and file permissions.\n");
+}
+
+void deleteIncome(void)
+{
+    int index;
+    // 7. Delete Income Function
+    if (incomeCount == 0) { printf("No income records available to delete.\n"); return; }
+    viewIncomes();
+    index = readInt("Enter income number to delete: ") - 1;
+    if (index < 0 || index >= incomeCount) { printf("Invalid income number!\n"); return; }
+    if (budgetlyDeleteIncomeAt(index)) printf("Income deleted successfully!\n");
+    else printf("Could not delete income.\n");
+}
+
 /*menu print  hoga yahan pr */
 void monthlysummary(float income, float bankbal,float cashbal, float savings,
                     float totalexpense)
@@ -884,8 +1085,8 @@ void addExpense() {
     printf("Enter place (e.g., Supermarket): ");
     readText("", expenses[expenseCount].place, sizeof(expenses[expenseCount].place));
     
-    printf("Enter payment method (Cash/Bank): ");
-    readText("", expenses[expenseCount].paymentMethod, sizeof(expenses[expenseCount].paymentMethod));
+    // Ask once where this expense was paid from.
+    choosePaymentMethod(expenses[expenseCount].paymentMethod);
     
     printf("Enter status (Paid/Unpaid): ");
     readText("", expenses[expenseCount].status, sizeof(expenses[expenseCount].status));
@@ -968,6 +1169,8 @@ void searchByCategory() {
         printf("No expenses found under category '%s'.\n", searchCat);
     }
 }
+
+
 /*menu print  hoga yahan pr */
 
 
@@ -979,6 +1182,7 @@ void menu(void) {
     printf("7. All Transactions\n8. Monthly Summary\n9. Category-wise Expense Report\n");
     printf("10. Set Saving Target\n11. Warning Amount\n12. Show User Information\n");
     printf("13. Update User Information\n14. Delete Account\n15. Logout\n");
+    printf("16. Edit Expense\n17. Delete Expense\n18. Edit Income\n19. Delete Income\n");
 }
 
 void incomeModule(void) {
@@ -1012,6 +1216,10 @@ void incomeModule(void) {
                 if (!usernameExists(username)) choice = 15;
                 break;
             case 15: printf("Logged out successfully.\n"); break;
+            case 16: editExpense(); break;
+            case 17: deleteExpense(); break;
+            case 18: editIncome(); break;
+            case 19: deleteIncome(); break;
             default: printf("Invalid choice!\n");
         }
     } while (choice != 15);
