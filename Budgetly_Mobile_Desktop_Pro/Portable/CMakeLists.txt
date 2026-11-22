@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.16)
+project(BudgetlyPortable LANGUAGES C)
+set(CMAKE_C_STANDARD 11)
+find_package(SDL2 CONFIG REQUIRED)
+find_package(SDL2_ttf CONFIG REQUIRED)
+add_executable(Budgetly_Portable src/Budgetly_Portable.c)
+target_link_libraries(Budgetly_Portable PRIVATE SDL2::SDL2 SDL2_ttf::SDL2_ttf m)
