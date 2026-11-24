@@ -538,7 +538,6 @@ void incomeModule()
     } while (choice != 7);
 }
 
-
 int main()
 {
     int choice;
@@ -557,19 +556,6 @@ int main()
             if (signUp())
             {
                 incomeCount = 0;
-
-                // Create an empty income file for the new account
-                FILE *fp = fopen(incomeFile, "w");
-
-                if (fp != NULL)
-                {
-                    fclose(fp);
-                }
-                else
-                {
-                    printf("Warning: Could not initialize income file.\n");
-                }
-
                 incomeModule();
             }
         }
@@ -593,4 +579,3 @@ int main()
 
     return 0;
 }
-
